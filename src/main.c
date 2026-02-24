@@ -51,7 +51,7 @@ int main(void)
 {
     int err;
 
-    LOG_INF("HTTPS Sample. Board: %s", CONFIG_BOARD);
+    LOG_INF("Blynk MQTT Sample. Board: %s", CONFIG_BOARD);
 
     /* Init modem lib */
     err = nrf_modem_lib_init();
