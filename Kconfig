@@ -2,9 +2,16 @@ mainmenu "Application Configuration"
 
 config BLYNK_SERVER
     string "Blynk Server"
-    
+
 config BLYNK_AUTH_TOKEN
     string "Blynk Auth Token"
+
+config BLYNK_TEMPLATE_ID
+    string "Blynk Template ID (e.g. TMPLabcd1234)"
+
+config FIRMWARE_VERSION
+    string "Firmware version string"
+    default "0.1.0"
 
 config DEFAULT_DELAY
     int "Update interval (minutes)"

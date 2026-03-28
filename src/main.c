@@ -17,6 +17,18 @@ LOG_MODULE_REGISTER(main);
 /* Local */
 #include "cloud/cloud.h"
 
+/* ── Blynk firmware binary tag ───────────────────────────────────────────── */
+
+#define BLYNK_PARAM_KV(k, v)  k "\0" v "\0"
+
+volatile const char firmwareTag[] __attribute__((used)) = "blnkinf\0"
+	BLYNK_PARAM_KV("mcu"    , CONFIG_FIRMWARE_VERSION)
+	BLYNK_PARAM_KV("fw-type", CONFIG_BLYNK_TEMPLATE_ID)
+	BLYNK_PARAM_KV("build"  , __DATE__ " " __TIME__)
+	BLYNK_PARAM_KV("blynk"  , "0.1.0")
+	BLYNK_PARAM_KV("hw"     , CONFIG_BOARD)
+	"\0";
+
 BUILD_ASSERT(sizeof(CONFIG_BLYNK_SERVER) > 1,
              "CONFIG_BLYNK_SERVER must be set (e.g. \"lon1.blynk.cloud\")");
 BUILD_ASSERT(sizeof(CONFIG_BLYNK_AUTH_TOKEN) > 1,
@@ -43,7 +55,7 @@ void cloud_cb(struct device_data *p_data)
 
 static void timeout_handler(struct k_timer *timer_id)
 {
-    LOG_INF("Timeout");
+    LOG_INF("Publish interval");
     k_sem_give(&thread_sem);
 }
 
@@ -51,7 +63,9 @@ int main(void)
 {
     int err;
 
-    LOG_INF("Blynk MQTT Sample. Board: %s", CONFIG_BOARD);
+    LOG_INF("Blynk MQTT Sample. Board: %s  FW: %s  Build: %s %s",
+            CONFIG_BOARD, CONFIG_FIRMWARE_VERSION, __DATE__, __TIME__);
+    (void)firmwareTag[0]; /* retain firmware tag in binary */
 
     /* Init modem lib */
     err = nrf_modem_lib_init();
@@ -69,10 +83,8 @@ int main(void)
         return err;
     }
 
-    /* Power saving is turned on */
-    lte_lc_psm_req(true);
-
-    /* Connect */
+    /* Connect to cellular network */
+    LOG_INF("Connecting to cellular network…");
     err = lte_lc_connect();
     if (err < 0)
     {
@@ -80,10 +92,12 @@ int main(void)
         return err;
     }
 
-    /* Start timer */
-    k_timer_start(&timer, K_MINUTES(CONFIG_DEFAULT_DELAY), K_MINUTES(CONFIG_DEFAULT_DELAY));
+    /* LTE is up – start MQTT and wait for first connection */
+    cloud_start();
+    cloud_wait_connected();
 
-    /* Allow for instant publish */
+    /* Start timer and trigger immediate first publish */
+    k_timer_start(&timer, K_MINUTES(CONFIG_DEFAULT_DELAY), K_MINUTES(CONFIG_DEFAULT_DELAY));
     k_sem_give(&thread_sem);
 
     while (1)

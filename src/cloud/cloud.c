@@ -29,9 +29,9 @@ static const char cert[] = {
 /* ── MQTT configuration ──────────────────────────────────────────────────── */
 
 #define MQTT_BROKER_PORT        8883
-#define MQTT_KEEPALIVE_S        30
+#define MQTT_KEEPALIVE_S        600   /* 10 minutes */
 #define MQTT_CONNECT_TIMEOUT_MS 10000
-#define MQTT_RESPONSE_WAIT_MS   3000
+#define RECONNECT_DELAY_S       10
 
 /* ── Buffers ─────────────────────────────────────────────────────────────── */
 
@@ -55,6 +55,23 @@ static bool redirect_pending;
 static bool mqtt_connected;
 static bool fota_in_progress;
 static uint16_t msg_id_counter = 1;
+
+/* ── Mutex – protects MQTT client from concurrent poll/publish access ────── */
+
+K_MUTEX_DEFINE(mqtt_mutex);
+
+/* ── Semaphore – signals main thread when first MQTT connection is up ─────── */
+
+K_SEM_DEFINE(cloud_connected_sem, 0, 1);
+static bool first_connect = true;
+
+/* ── Poll thread ─────────────────────────────────────────────────────────── */
+
+#define POLL_THREAD_STACK_SIZE  2048
+#define POLL_THREAD_PRIORITY    5
+
+K_THREAD_STACK_DEFINE(poll_stack, POLL_THREAD_STACK_SIZE);
+static struct k_thread poll_thread;
 
 /* ── Callback ────────────────────────────────────────────────────────────── */
 
@@ -177,8 +194,16 @@ static void handle_ota(const uint8_t *payload, size_t len)
 		return;
 	}
 
+	/* fota_download_start prepends '/' itself, so strip it from the path */
+	const char *path = (ota_path[0] == '/') ? ota_path + 1 : ota_path;
+
+	/* Prefix host with https:// so the downloader doesn't have to guess */
+	char ota_host_https[BROKER_HOST_SIZE + sizeof("https://")];
+
+	snprintk(ota_host_https, sizeof(ota_host_https), "https://%s", ota_host);
+
 	fota_in_progress = true;
-	int err = fota_download_start(ota_host, ota_path,
+	int err = fota_download_start(ota_host_https, path,
 				      CONFIG_CLOUD_TLS_SEC_TAG, 0, 0);
 	if (err) {
 		LOG_ERR("fota_download_start() failed: %d", err);
@@ -210,12 +235,66 @@ static void handle_ds_downlink(const char *topic, size_t topic_len,
 	LOG_INF("Downlink DS topic=%.*s value=%.*s",
 		(int)topic_len, topic, (int)payload_len, payload);
 
-	/* TODO: parse pin number and value, update application state */
 	if (cloud_callback) {
 		struct device_data data = { .do_something = true };
 
 		cloud_callback(&data);
 	}
+}
+
+/* ── Device info publish ─────────────────────────────────────────────────── */
+
+static void publish_device_info(void)
+{
+	cJSON *root = cJSON_CreateObject();
+
+	if (!root) {
+		LOG_ERR("Failed to create device info JSON");
+		return;
+	}
+
+	cJSON_AddStringToObject(root, "tmpl",   CONFIG_BLYNK_TEMPLATE_ID);
+	cJSON_AddStringToObject(root, "ver",    CONFIG_FIRMWARE_VERSION);
+	cJSON_AddStringToObject(root, "build",  __DATE__ " " __TIME__);
+	cJSON_AddStringToObject(root, "type",   CONFIG_BLYNK_TEMPLATE_ID);
+	cJSON_AddNumberToObject(root, "rxbuff", MQTT_RX_BUF_SIZE);
+
+	char *json = cJSON_PrintUnformatted(root);
+
+	cJSON_Delete(root);
+
+	if (!json) {
+		LOG_ERR("Failed to serialise device info");
+		return;
+	}
+
+	static const char topic[] = "info/mcu";
+
+	struct mqtt_publish_param pub = {
+		.message = {
+			.topic = {
+				.topic = { .utf8 = (uint8_t *)topic,
+					   .size = sizeof(topic) - 1 },
+				.qos   = MQTT_QOS_0_AT_MOST_ONCE,
+			},
+			.payload = {
+				.data = (uint8_t *)json,
+				.len  = strlen(json),
+			},
+		},
+		.message_id  = 0,
+		.dup_flag    = 0,
+		.retain_flag = 0,
+	};
+
+	LOG_INF("PUBLISH → %s", topic);
+	int err = mqtt_publish(&client, &pub);
+
+	if (err) {
+		LOG_ERR("Device info publish failed: %d", err);
+	}
+
+	cJSON_free(json);
 }
 
 /* ── MQTT subscriptions ──────────────────────────────────────────────────── */
@@ -229,13 +308,13 @@ static int subscribe_topics(void)
 			.qos   = MQTT_QOS_0_AT_MOST_ONCE,
 		},
 		{
-			.topic = { .utf8 = (uint8_t *)"downlink/ota",
-				   .size = sizeof("downlink/ota") - 1 },
+			.topic = { .utf8 = (uint8_t *)"downlink/ota/json",
+				   .size = sizeof("downlink/ota/json") - 1 },
 			.qos   = MQTT_QOS_0_AT_MOST_ONCE,
 		},
 		{
-			.topic = { .utf8 = (uint8_t *)"downlink/ds/+",
-				   .size = sizeof("downlink/ds/+") - 1 },
+			.topic = { .utf8 = (uint8_t *)"downlink/ds/#",
+				   .size = sizeof("downlink/ds/#") - 1 },
 			.qos   = MQTT_QOS_0_AT_MOST_ONCE,
 		},
 	};
@@ -262,6 +341,11 @@ static void mqtt_evt_handler(struct mqtt_client *const c,
 			LOG_INF("MQTT CONNACK – connected to Blynk");
 			mqtt_connected = true;
 			subscribe_topics();
+			publish_device_info();
+			if (first_connect) {
+				first_connect = false;
+				k_sem_give(&cloud_connected_sem);
+			}
 		} else {
 			LOG_ERR("MQTT CONNACK error: %d", evt->result);
 		}
@@ -300,8 +384,8 @@ static void mqtt_evt_handler(struct mqtt_client *const c,
 		    strncmp(topic_utf8, "downlink/redirect", topic_len) == 0) {
 			handle_redirect(payload_buf, (size_t)rc);
 
-		} else if (topic_len == sizeof("downlink/ota") - 1 &&
-			   strncmp(topic_utf8, "downlink/ota", topic_len) == 0) {
+		} else if (topic_len == sizeof("downlink/ota/json") - 1 &&
+			   strncmp(topic_utf8, "downlink/ota/json", topic_len) == 0) {
 			handle_ota(payload_buf, (size_t)rc);
 
 		} else if (topic_len > sizeof("downlink/ds/") - 1 &&
@@ -376,19 +460,13 @@ static void mqtt_client_setup(void)
 {
 	mqtt_client_init(&client);
 
-	/*
-	 * Blynk MQTT credentials:
-	 *   Client-ID : auth token  (unique per device)
-	 *   Username  : auth token
-	 *   Password  : auth token
-	 */
 	static struct mqtt_utf8 client_id_utf8 = {
 		.utf8 = (uint8_t *)CONFIG_BLYNK_AUTH_TOKEN,
 		.size = sizeof(CONFIG_BLYNK_AUTH_TOKEN) - 1,
 	};
 	static struct mqtt_utf8 username_utf8 = {
-		.utf8 = (uint8_t *)CONFIG_BLYNK_AUTH_TOKEN,
-		.size = sizeof(CONFIG_BLYNK_AUTH_TOKEN) - 1,
+		.utf8 = (uint8_t *)"device",
+		.size = sizeof("device") - 1,
 	};
 	static struct mqtt_utf8 password_utf8 = {
 		.utf8 = (uint8_t *)CONFIG_BLYNK_AUTH_TOKEN,
@@ -407,7 +485,6 @@ static void mqtt_client_setup(void)
 	client.tx_buf        = mqtt_tx_buf;
 	client.tx_buf_size   = sizeof(mqtt_tx_buf);
 
-	/* TLS transport (modem-offloaded, cert provisioned via modem_key_mgmt) */
 	client.transport.type                     = MQTT_TRANSPORT_SECURE;
 	client.transport.tls.config.peer_verify   = TLS_PEER_VERIFY_REQUIRED;
 	client.transport.tls.config.cipher_list   = NULL;
@@ -416,51 +493,6 @@ static void mqtt_client_setup(void)
 	client.transport.tls.config.sec_tag_count = ARRAY_SIZE(tls_sec_tags);
 	client.transport.tls.config.session_cache = TLS_SESSION_CACHE_ENABLED;
 	client.transport.tls.config.hostname      = current_host;
-}
-
-/* ── Socket poll helper ──────────────────────────────────────────────────── */
-
-static int poll_mqtt(int timeout_ms)
-{
-	int64_t start = k_uptime_get();
-
-	while (true) {
-		int64_t elapsed = k_uptime_get() - start;
-
-		if (elapsed >= timeout_ms) {
-			break;
-		}
-
-		int remaining = timeout_ms - (int)elapsed;
-		struct zsock_pollfd fds = {
-			.fd     = mqtt_socket(&client),
-			.events = ZSOCK_POLLIN,
-		};
-
-		int rc = zsock_poll(&fds, 1, MIN(remaining, 500));
-
-		if (rc < 0) {
-			LOG_ERR("zsock_poll() failed: %d", errno);
-			return -errno;
-		}
-
-		if (rc > 0 && (fds.revents & ZSOCK_POLLIN)) {
-			rc = mqtt_input(&client);
-			if (rc && rc != -EAGAIN) {
-				LOG_ERR("mqtt_input() failed: %d", rc);
-				return rc;
-			}
-		}
-
-		int live_rc = mqtt_live(&client);
-
-		if (live_rc && live_rc != -EAGAIN) {
-			LOG_ERR("mqtt_live() failed: %d", live_rc);
-			return live_rc;
-		}
-	}
-
-	return 0;
 }
 
 /* ── Connect to Blynk broker ─────────────────────────────────────────────── */
@@ -484,29 +516,104 @@ static int mqtt_connect_to_blynk(void)
 		return err;
 	}
 
-	/* Wait for CONNACK (triggers subscription in the event handler) */
+	/* Wait for CONNACK */
 	int64_t start = k_uptime_get();
 
 	while (!mqtt_connected) {
 		if (k_uptime_get() - start > MQTT_CONNECT_TIMEOUT_MS) {
 			LOG_ERR("MQTT connect timeout");
-			mqtt_disconnect(&client);
+			mqtt_disconnect(&client, NULL);
 			return -ETIMEDOUT;
 		}
 
 		struct zsock_pollfd fds = {
-			.fd     = mqtt_socket(&client),
+			.fd     = client.transport.tls.sock,
 			.events = ZSOCK_POLLIN,
 		};
-		int rc = zsock_poll(&fds, 1, 500);
 
-		if (rc > 0 && (fds.revents & ZSOCK_POLLIN)) {
+		if (zsock_poll(&fds, 1, 500) > 0 &&
+		    (fds.revents & ZSOCK_POLLIN)) {
 			mqtt_input(&client);
 		}
 	}
 
-	LOG_INF("MQTT connected to Blynk");
 	return 0;
+}
+
+/* ── Poll thread ─────────────────────────────────────────────────────────── */
+
+static void poll_thread_fn(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	bool first_attempt = true;
+
+	while (true) {
+		if (!mqtt_connected) {
+			/* Apply any pending redirect before reconnecting */
+			if (redirect_pending) {
+				strncpy(current_host, redirect_host,
+					BROKER_HOST_SIZE - 1);
+				current_host[BROKER_HOST_SIZE - 1] = '\0';
+				redirect_pending = false;
+			}
+
+			if (!first_attempt) {
+				LOG_INF("Reconnecting in %ds…", RECONNECT_DELAY_S);
+				k_sleep(K_SECONDS(RECONNECT_DELAY_S));
+			}
+			first_attempt = false;
+
+			k_mutex_lock(&mqtt_mutex, K_FOREVER);
+			mqtt_connect_to_blynk();
+			k_mutex_unlock(&mqtt_mutex);
+			continue;
+		}
+
+		struct zsock_pollfd fds = {
+			.fd     = client.transport.tls.sock,
+			.events = ZSOCK_POLLIN,
+		};
+
+		int rc = zsock_poll(&fds, 1, 5000);
+
+		k_mutex_lock(&mqtt_mutex, K_FOREVER);
+
+		if (rc < 0) {
+			LOG_ERR("zsock_poll() failed: %d", errno);
+			mqtt_connected = false;
+			k_mutex_unlock(&mqtt_mutex);
+			continue;
+		}
+
+		if (rc > 0 && (fds.revents & ZSOCK_POLLIN)) {
+			rc = mqtt_input(&client);
+			if (rc && rc != -EAGAIN) {
+				LOG_ERR("mqtt_input() failed: %d", rc);
+				mqtt_connected = false;
+				k_mutex_unlock(&mqtt_mutex);
+				continue;
+			}
+		}
+
+		int live_rc = mqtt_live(&client);
+
+		if (live_rc && live_rc != -EAGAIN) {
+			LOG_ERR("mqtt_live() failed: %d", live_rc);
+			mqtt_connected = false;
+		}
+
+		k_mutex_unlock(&mqtt_mutex);
+	}
+}
+
+/* ── cloud_wait_connected ────────────────────────────────────────────────── */
+
+void cloud_wait_connected(void)
+{
+	k_sem_take(&cloud_connected_sem, K_FOREVER);
 }
 
 /* ── cloud_publish ───────────────────────────────────────────────────────── */
@@ -515,33 +622,16 @@ static int counter;
 
 int cloud_publish(struct device_data *data)
 {
-	int err;
-
-	/* Apply any pending redirect before connecting */
-	if (redirect_pending) {
-		LOG_INF("Applying broker redirect → %s", redirect_host);
-		strncpy(current_host, redirect_host, BROKER_HOST_SIZE - 1);
-		current_host[BROKER_HOST_SIZE - 1] = '\0';
-		redirect_pending = false;
-	}
-
-	/* Skip publish if an OTA is running (sys_reboot() will fire when done) */
 	if (fota_in_progress) {
 		LOG_INF("OTA in progress – skipping publish");
 		return 0;
 	}
 
-	/* Connect: DNS resolve + TLS handshake + CONNACK + subscribe */
-	err = mqtt_connect_to_blynk();
-	if (err) {
-		LOG_ERR("Failed to connect to Blynk: %d", err);
-		return err;
+	if (!mqtt_connected) {
+		LOG_WRN("Not connected to Blynk, skipping publish");
+		return -ENOTCONN;
 	}
 
-	/* Wait briefly for SUBACK */
-	poll_mqtt(500);
-
-	/* ── Publish V1 (replace with real sensor data as needed) ──────────── */
 	counter++;
 
 	char payload[32];
@@ -561,29 +651,20 @@ int cloud_publish(struct device_data *data)
 				.len  = (size_t)pay_len,
 			},
 		},
-		.message_id  = 0,  /* unused for QoS 0 */
+		.message_id  = 0,
 		.dup_flag    = 0,
 		.retain_flag = 0,
 	};
 
 	LOG_INF("PUBLISH → %s = %s", topic, payload);
-	err = mqtt_publish(&client, &pub);
+
+	k_mutex_lock(&mqtt_mutex, K_FOREVER);
+	int err = mqtt_publish(&client, &pub);
+	k_mutex_unlock(&mqtt_mutex);
+
 	if (err) {
 		LOG_ERR("mqtt_publish() failed: %d", err);
 	}
-
-	/* Poll to receive downlink messages (redirect, OTA, virtual-pin writes) */
-	poll_mqtt(MQTT_RESPONSE_WAIT_MS);
-
-	/* Graceful disconnect */
-	mqtt_disconnect(&client);
-	poll_mqtt(500); /* drain DISCONNECT ACK */
-
-	if (redirect_pending) {
-		LOG_INF("Redirect queued to %s (applied next cycle)", redirect_host);
-	}
-
-	/* If OTA started it will run to completion and call sys_reboot() */
 
 	return err;
 }
@@ -642,18 +723,14 @@ int cloud_init(void (*callback)(struct device_data *data))
 
 	cloud_callback = callback;
 
-	/* Initial broker host (may change on redirect) */
 	strncpy(current_host, CONFIG_BLYNK_SERVER, BROKER_HOST_SIZE - 1);
 	current_host[BROKER_HOST_SIZE - 1] = '\0';
 
-	/* Provision CA certificate to modem secure storage */
 	err = cert_provision();
 	if (err) {
 		LOG_ERR("Certificate provisioning failed: %d", err);
-		/* Non-fatal – connection attempt will surface the error */
 	}
 
-	/* Initialise FOTA download library */
 	err = fota_download_init(fota_callback);
 	if (err) {
 		LOG_ERR("fota_download_init() failed: %d", err);
@@ -661,4 +738,15 @@ int cloud_init(void (*callback)(struct device_data *data))
 	}
 
 	return 0;
+}
+
+/* ── cloud_start ─────────────────────────────────────────────────────────── */
+
+void cloud_start(void)
+{
+	k_thread_create(&poll_thread, poll_stack,
+			K_THREAD_STACK_SIZEOF(poll_stack),
+			poll_thread_fn, NULL, NULL, NULL,
+			POLL_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&poll_thread, "mqtt_poll");
 }

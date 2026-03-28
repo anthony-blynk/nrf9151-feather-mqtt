@@ -30,4 +30,14 @@ int cloud_publish(struct device_data *data);
  */
 int cloud_init(void (*callback)(struct device_data *data));
 
+/**
+ * @brief Block until the first MQTT connection to Blynk is established
+ */
+void cloud_wait_connected(void);
+
+/**
+ * @brief Start the MQTT poll/reconnect thread. Call after LTE is connected.
+ */
+void cloud_start(void);
+
 #endif
