@@ -15,6 +15,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(cloud);
 
+#include <date_time.h>
 #include <modem/modem_key_mgmt.h>
 #include <net/fota_download.h>
 #include <cJSON.h>
@@ -686,6 +687,59 @@ int cloud_publish(struct device_data *data)
 		LOG_ERR("mqtt_publish() failed: %d", err);
 	}
 
+	return err;
+}
+
+/* ── cloud_publish_button ────────────────────────────────────────────────── */
+
+int cloud_publish_button(void)
+{
+	if (!mqtt_connected) {
+		LOG_WRN("Not connected to Blynk, skipping button publish");
+		return -ENOTCONN;
+	}
+
+	/* Format current time as "YYYY-MM-DD HH:MM:SS" */
+	char payload[32] = "unknown";
+	int64_t unix_ms;
+
+	if (date_time_now(&unix_ms) == 0) {
+		time_t t = (time_t)(unix_ms / 1000);
+		struct tm *tm = gmtime(&t);
+
+		snprintk(payload, sizeof(payload), "%04d-%02d-%02d %02d:%02d:%02d",
+			 tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+			 tm->tm_hour, tm->tm_min, tm->tm_sec);
+	}
+
+	static const char topic[] = "ds/V2";
+
+	struct mqtt_publish_param pub = {
+		.message = {
+			.topic = {
+				.topic = { .utf8 = (uint8_t *)topic,
+					   .size = sizeof(topic) - 1 },
+				.qos   = MQTT_QOS_0_AT_MOST_ONCE,
+			},
+			.payload = {
+				.data = (uint8_t *)payload,
+				.len  = strlen(payload),
+			},
+		},
+		.message_id  = 0,
+		.dup_flag    = 0,
+		.retain_flag = 0,
+	};
+
+	LOG_INF("PUBLISH → %s = %s (button pressed)", topic, payload);
+
+	k_mutex_lock(&mqtt_mutex, K_FOREVER);
+	int err = mqtt_publish(&client, &pub);
+	k_mutex_unlock(&mqtt_mutex);
+
+	if (err) {
+		LOG_ERR("mqtt_publish() failed: %d", err);
+	}
 	return err;
 }
 

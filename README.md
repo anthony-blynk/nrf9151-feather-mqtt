@@ -27,8 +27,8 @@ It will then start installing and initializing things which can take a while, at
 
 4) Clone the Blynk sample into the ```nfed\samples``` directory:
 ```
-C:\nRF91Sdk\nfed\samples>git clone https://github.com/anthony-blynk/nrf9151-feather-https.git blynk_https
-Cloning into 'blynk_https'...
+C:\nRF91Sdk\nfed\samples>git clone https://github.com/anthony-blynk/nrf9151-feather-mqtt.git blynk_mqtt
+Cloning into 'blynk_mqtt'...
 remote: Enumerating objects: 29, done.
 remote: Counting objects: 100% (29/29), done.
 remote: Compressing objects: 100% (18/18), done.
@@ -41,7 +41,7 @@ Resolving deltas: 100% (7/7), done.
 
 6) In the Project Settings on the left set the Board and Project:
 - The Board should be circuitdojo_feather_nrf9151/nrf9151/ns 
-- The Project is the repo you just cloned, eg c:\nRF91Sdk\nfed\samples\blynk_https
+- The Project is the repo you just cloned, eg c:\nRF91Sdk\nfed\samples\blynk_mqtt
 
 7) In Quick Actions click Build.
 

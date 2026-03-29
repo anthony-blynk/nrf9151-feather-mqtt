@@ -22,6 +22,11 @@ struct device_data
 int cloud_publish(struct device_data *data);
 
 /**
+ * @brief Publish a button press event to Blynk (datastream V2)
+ */
+int cloud_publish_button(void);
+
+/**
  * @brief Initialize the cloud
  *
  * @param callback Callback function to be called when data is received
