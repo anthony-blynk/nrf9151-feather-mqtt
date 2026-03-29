@@ -19,10 +19,10 @@ If you want to avoid setting up the build environment you can flash the pre-buil
 
 ### First-time flash
 
-1. Download `zephyr.signed.bin` from the latest release
+1. Download `merged.hex` from the latest release
 2. Install [nRF Connect for Desktop](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-Desktop) and open the **Programmer** app
 3. Connect your Feather via USB
-4. Do a full chip erase, then flash `zephyr.signed.bin`
+4. Do a full chip erase, then flash `merged.hex`
 
 ### Provisioning credentials
 
