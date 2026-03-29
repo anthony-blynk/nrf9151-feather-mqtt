@@ -1,13 +1,11 @@
 mainmenu "Application Configuration"
 
 config BLYNK_SERVER
-    string "Blynk Server"
-
-config BLYNK_AUTH_TOKEN
-    string "Blynk Auth Token"
+    string "Default Blynk server (used as provisioning prompt default)"
+    default "blynk.cloud"
 
 config BLYNK_TEMPLATE_ID
-    string "Blynk Template ID (e.g. TMPLabcd1234)"
+    string "Blynk Template ID embedded in firmware binary tag and used as provisioning default"
 
 config FIRMWARE_VERSION
     string "Firmware version string"

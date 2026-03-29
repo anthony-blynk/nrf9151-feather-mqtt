@@ -16,6 +16,7 @@ LOG_MODULE_REGISTER(main);
 
 /* Local */
 #include "cloud/cloud.h"
+#include "credentials/credentials.h"
 
 /* ── Blynk firmware binary tag ───────────────────────────────────────────── */
 
@@ -29,10 +30,6 @@ volatile const char firmwareTag[] __attribute__((used)) = "blnkinf\0"
 	BLYNK_PARAM_KV("hw"     , CONFIG_BOARD)
 	"\0";
 
-BUILD_ASSERT(sizeof(CONFIG_BLYNK_SERVER) > 1,
-             "CONFIG_BLYNK_SERVER must be set (e.g. \"lon1.blynk.cloud\")");
-BUILD_ASSERT(sizeof(CONFIG_BLYNK_AUTH_TOKEN) > 1,
-             "CONFIG_BLYNK_AUTH_TOKEN must be set");
 
 /* Timer */
 static void timeout_handler(struct k_timer *timer_id);
@@ -66,6 +63,21 @@ int main(void)
     LOG_INF("Blynk MQTT Sample. Board: %s  FW: %s  Build: %s %s",
             CONFIG_BOARD, CONFIG_FIRMWARE_VERSION, __DATE__, __TIME__);
     (void)firmwareTag[0]; /* retain firmware tag in binary */
+
+    /* Load credentials from NVS */
+    err = credentials_init();
+    if (err == -ENOENT)
+    {
+        /* No auth token – shell is still running, wait for provisioning */
+        while (1) {
+            k_sleep(K_FOREVER);
+        }
+    }
+    else if (err < 0)
+    {
+        LOG_ERR("Failed to init credentials storage. (err: %i)", err);
+        return err;
+    }
 
     /* Init modem lib */
     err = nrf_modem_lib_init();

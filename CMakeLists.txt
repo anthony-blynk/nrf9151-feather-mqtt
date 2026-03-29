@@ -29,3 +29,4 @@ project(blynk_https)
 
 target_sources(app PRIVATE src/main.c)
 target_sources(app PRIVATE src/cloud/cloud.c)
+target_sources(app PRIVATE src/credentials/credentials.c)

@@ -20,6 +20,7 @@ LOG_MODULE_REGISTER(cloud);
 #include <cJSON.h>
 
 #include "cloud.h"
+#include "../credentials/credentials.h"
 
 /* CA Certificate (ISRG Root X1 – covers both the MQTT broker and OTA downloads) */
 static const char cert[] = {
@@ -220,8 +221,25 @@ static void handle_redirect(const uint8_t *payload, size_t len)
 		return;
 	}
 
-	memcpy(redirect_host, payload, len);
-	redirect_host[len] = '\0';
+	char raw[BROKER_HOST_SIZE];
+	memcpy(raw, payload, len);
+	raw[len] = '\0';
+
+	/* Strip scheme (e.g. "mqtts://") */
+	const char *host = raw;
+	const char *scheme_end = strstr(raw, "://");
+	if (scheme_end) {
+		host = scheme_end + 3;
+	}
+
+	/* Strip port (e.g. ":8883") */
+	char *colon = strchr(host, ':');
+	if (colon) {
+		*colon = '\0';
+	}
+
+	strncpy(redirect_host, host, BROKER_HOST_SIZE - 1);
+	redirect_host[BROKER_HOST_SIZE - 1] = '\0';
 
 	LOG_INF("Broker redirect requested → %s", redirect_host);
 	redirect_pending = true;
@@ -253,10 +271,10 @@ static void publish_device_info(void)
 		return;
 	}
 
-	cJSON_AddStringToObject(root, "tmpl",   CONFIG_BLYNK_TEMPLATE_ID);
+	cJSON_AddStringToObject(root, "tmpl",   credentials_get_template_id());
 	cJSON_AddStringToObject(root, "ver",    CONFIG_FIRMWARE_VERSION);
 	cJSON_AddStringToObject(root, "build",  __DATE__ " " __TIME__);
-	cJSON_AddStringToObject(root, "type",   CONFIG_BLYNK_TEMPLATE_ID);
+	cJSON_AddStringToObject(root, "type",   credentials_get_template_id());
 	cJSON_AddNumberToObject(root, "rxbuff", MQTT_RX_BUF_SIZE);
 
 	char *json = cJSON_PrintUnformatted(root);
@@ -456,22 +474,24 @@ static int broker_setup(const char *host)
 
 /* ── MQTT client initialisation ──────────────────────────────────────────── */
 
+static struct mqtt_utf8 client_id_utf8;
+static struct mqtt_utf8 username_utf8;
+static struct mqtt_utf8 password_utf8;
+
 static void mqtt_client_setup(void)
 {
+	const char *token = credentials_get_auth_token();
+
 	mqtt_client_init(&client);
 
-	static struct mqtt_utf8 client_id_utf8 = {
-		.utf8 = (uint8_t *)CONFIG_BLYNK_AUTH_TOKEN,
-		.size = sizeof(CONFIG_BLYNK_AUTH_TOKEN) - 1,
-	};
-	static struct mqtt_utf8 username_utf8 = {
-		.utf8 = (uint8_t *)"device",
-		.size = sizeof("device") - 1,
-	};
-	static struct mqtt_utf8 password_utf8 = {
-		.utf8 = (uint8_t *)CONFIG_BLYNK_AUTH_TOKEN,
-		.size = sizeof(CONFIG_BLYNK_AUTH_TOKEN) - 1,
-	};
+	client_id_utf8.utf8 = (uint8_t *)token;
+	client_id_utf8.size = strlen(token);
+
+	username_utf8.utf8 = (uint8_t *)"device";
+	username_utf8.size = sizeof("device") - 1;
+
+	password_utf8.utf8 = (uint8_t *)token;
+	password_utf8.size = strlen(token);
 
 	client.broker        = &broker_storage;
 	client.evt_cb        = mqtt_evt_handler;
@@ -723,7 +743,7 @@ int cloud_init(void (*callback)(struct device_data *data))
 
 	cloud_callback = callback;
 
-	strncpy(current_host, CONFIG_BLYNK_SERVER, BROKER_HOST_SIZE - 1);
+	strncpy(current_host, credentials_get_server(), BROKER_HOST_SIZE - 1);
 	current_host[BROKER_HOST_SIZE - 1] = '\0';
 
 	err = cert_provision();
