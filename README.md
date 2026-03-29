@@ -1,6 +1,7 @@
-# Blynk HTTP Sample for nRF9151 Feather
+# Blynk MQTT Sample for nRF9151 Feather
 
-Sends an incrementing counter to a Blynk Datastream
+Sends an incrementing counter to a Blynk Datastream. Supports OTA firmware updates.
+Uses LTE-M.
 
 ## Installation and Building
 
