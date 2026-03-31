@@ -1,6 +1,10 @@
-# Blynk MQTT Sample for nRF9151 Feather
+# Blynk nRF9151 MQTT Sample
 
-Connects a [Circuit Dojo Feather nRF9151](https://www.circuitdojo.com/products/nrf9151-feather) to [Blynk](https://blynk.io) over LTE-M using MQTT. Features:
+Connects an [nRF9151](https://www.nordicsemi.com/Products/nRF9151) to [Blynk](https://blynk.io) over LTE-M using MQTT.
+
+Works with either the [nRF9151 SMA DK](https://www.nordicsemi.com/Products/Development-hardware/nRF9151-SMA-DK), the [Thingy:91 X](https://www.nordicsemi.com/Products/Development-hardware/Nordic-Thingy-91-X), or the [Circuit Dojo nRF9151 Feather](https://www.circuitdojo.com/products/nrf9151-feather).
+
+Features:
 
 - Publishes an incrementing counter to Blynk datastream **V1** on a configurable interval
 - Publishes the time of the last button press to datastream **V2** when the user button is pressed
@@ -13,16 +17,23 @@ In your Blynk template create two datastreams:
 - **V1** — Integer — for the counter
 - **V2** — String — for the button press timestamp
 
-## Using the Pre-built Binary
+## Using the Pre-built Binaries
 
-If you want to avoid setting up the build environment you can flash the pre-built binary from the [Releases](../../releases) page.
+If you want to avoid setting up the build environment you can flash one if the pre-built binaries from the [binaries](binaries) directory.
 
 ### First-time flash
 
-1. Download `merged.hex` from the latest release
+#### For the nRF9151 SMA DK or the Thingy:91 X:
+1. Download a pre-built binary from the build directory
 2. Install [nRF Connect for Desktop](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-Desktop) and open the **Programmer** app
-3. Connect your Feather via USB
-4. Do a full chip erase, then flash `merged.hex`
+3. Connect your board via USB
+4. Add the binary file
+5. Do an Erase & write to flash device
+
+#### For the nRF9151 Feather:
+1. Get [probe-rs](https://probe.rs/docs/getting-started/installation/)
+2. flash the device with: ```probe-rs download --chip nRF9151_xxAA --binary-format hex feather_merged.hex --allow-erase-all```
+
 
 ### Provisioning credentials
 
@@ -35,9 +46,9 @@ uart:~$
 Then enter your Blynk credentials:
 
 ```
-cred token <your-blynk-auth-token>
-cred template <your-template-id>
 cred server <your-blynk-server>   (optional, default: blynk.cloud)
+cred template <your-template-id>
+cred token <your-blynk-auth-token>
 kernel reboot
 ```
 
@@ -45,7 +56,7 @@ Use `cred show` to check what is stored, or `cred clear` to erase and re-provisi
 
 The device reboots and connects automatically. Credentials survive OTA updates.
 
-> **Note:** The pre-built binary contains a hardcoded Blynk template ID in its firmware tag. This means Blynk's OTA firmware shipment UI will not work for your template — you need to build from source (see below) to use Blynk OTA. Alternatively you can trigger OTA by publishing directly to the device's `downlink/ota/json` topic with a URL to a `zephyr.signed.bin`.
+> **Note:** The pre-built binary contains a hardcoded Blynk template ID in its firmware tag. This means Blynk's OTA firmware shipment UI will not work for your template — you need to build from source (see below) to use Blynk OTA. 
 
 ## Building from Source
 
@@ -61,10 +72,9 @@ https://github.com/circuitdojo/nrf9160-feather-examples-and-drivers.git
 ```
 Hit Enter for the default branch. It will then install and initialise everything — this can take 10+ minutes.
 
-4. Clone this sample into the `nfed\samples` directory:
+4. Copy this sample into the `nfed\samples` directory:
 ```
-cd c:\nrf91\nfed\samples
-git clone https://github.com/anthony-blynk/nrf9151-feather-mqtt.git blynk_mqtt
+c:\nrf91\nfed\samples
 ```
 
 5. Set your Blynk template ID in `prj.conf`:
@@ -74,7 +84,14 @@ CONFIG_BLYNK_TEMPLATE_ID="TMPLxxxxxxxx"
 The auth token and server are entered at runtime via the shell — do not put them in `prj.conf`.
 
 6. In the Project Settings panel on the left set:
-   - **Board:** `circuitdojo_feather_nrf9151/nrf9151/ns`
+   
+   - **Board:** `nrf9151dk/nrf9151/ns` for the nRF9151 SMA DK
+
+   - **Board:** `thingy91x/nrf9151/ns` for the Thingy:91 X
+
+   - **Board:** `circuitdojo_feather_nrf9151/nrf9151/ns` for the nRF9151 Feather
+
+   And set the Project:
    - **Project:** the cloned directory, e.g. `c:\nrf91\nfed\samples\blynk_mqtt`
 
 7. In Quick Actions click **Build**. The first build takes about 10 minutes; subsequent builds are faster.
@@ -91,11 +108,11 @@ Then in Quick Actions click **Flash** and select `nRF9151_xxAA`.
 
 ## OTA Firmware Updates
 
-For your own builds you can use Blynk's built-in firmware shipment — upload `zephyr.signed.bin` from `build/circuitdojo_feather_nrf9151/blynk_mqtt/zephyr/zephyr.signed.bin`.
+For your own builds you can use Blynk's built-in OTA firmware shipment — upload `zephyr.signed.bin` from `build/circuitdojo_feather_nrf9151/blynk_mqtt/zephyr/zephyr.signed.bin`.
 
 To update the version before building, edit the `VERSION` file:
 ```
-VERSION_MAJOR = 1
-VERSION_MINOR = 4
+VERSION_MAJOR = 2
+VERSION_MINOR = 0
 PATCHLEVEL = 0
 ```
